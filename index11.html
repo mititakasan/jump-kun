@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ボイスアクション！ジャンパーくん - Final Fix</title>
+    <style>
+        body { text-align: center; font-family: sans-serif; background: #111; color: white; margin-top: 10px; overflow: hidden; }
+        canvas { border: 4px solid #444; background: #87CEEB; display: block; margin: 10px auto; border-radius: 10px; }
+        .info { font-size: 20px; font-weight: bold; color: #FFD700; }
+    </style>
+</head>
+<body>
+    <h1>ボイスアクション！ジャンパーくん</h1>
+    <div class="info">SCORE: <span id="score">0</span> | HI: <span id="hiScore">0</span></div>
+    <p style="font-size: 14px; color: #ff99ff;">アイテム出現バグを修正しました！どんどん登って回復しよう！</p>
+    <canvas id="gameCanvas" width="400" height="600"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        let player = { x: 185, y: 500, vy: 0, vx: 3, size: 30, score: 0, stamina: 100, maxStamina: 100 };
+        let platforms = [], items = [], enemies = [], particles = [];
+        const gravity = 0.4;
+        let volume = 0, isStarted = false, isActive = false, isGameOver = false;
+        let flashTimer = 0, audioCtx;
+
+        let hiScore = localStorage.getItem('jumperKunHiScore') || 0;
+        document.getElementById('hiScore').innerText = hiScore;
+
+        function playSound(freq, type, duration, vol=0.1) {
+            if (!audioCtx) return;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = type;
+            osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+            osc.connect(gain); gain.connect(audioCtx.destination);
+            gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + duration);
+            osc.start(); osc.stop(audioCtx.currentTime + duration);
+        }
+
+        function playBGM() {
+            if (!isActive || isGameOver) return;
+            playSound(110, 'sine', 0.5, 0.03);
+            setTimeout(playBGM, 500);
+        }
+
+        function initGame() {
+            platforms = []; items = []; enemies = []; particles = [];
+            platforms.push({ x: 0, y: 550, w: 400, h: 50, type: 'normal' });
+            for (let i = 0; i < 6; i++) { addPlatform(i * 100); }
+        }
+
+        function addPlatform(yPos) {
+            let minW = Math.max(30, 70 - Math.floor(player.score / 500));
+            let w = minW + Math.random() * 20;
+            let type = Math.random() < 0.2 ? 'ice' : 'normal';
+            let x = Math.random() * (canvas.width - w);
+            platforms.push({ x: x, y: yPos, w: w, h: 10, type: type, timer: 0, broken: false });
+            
+            // アイテム追加の判定を関数として独立
+            spawnItemOnPlatform(x, w, yPos);
+        }
+
+        function spawnItemOnPlatform(x, w, y) {
+            if (Math.random() < 0.3) {
+                let itemType = Math.random() < 0.2 ? 'poison' : 'meat';
+                items.push({ x: x + w/2, y: y - 20, size: 10, taken: false, type: itemType });
+            }
+        }
+
+        function createParticles(x, y, color) {
+            for (let i = 0; i < 8; i++) { particles.push({ x: x, y: y, vx: (Math.random() - 0.5) * 4, vy: (Math.random() - 0.5) * 4, life: 1.0, color: color }); }
+        }
+
+        async function initAudio() {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const source = audioCtx.createMediaStreamSource(stream);
+            const analyzer = audioCtx.createAnalyser();
+            source.connect(analyzer);
+            const dataArray = new Uint8Array(analyzer.frequencyBinCount);
+            playBGM();
+
+            function checkVolume() {
+                analyzer.getByteFrequencyData(dataArray);
+                let sum = 0; for(let i=0; i<dataArray.length; i++) sum += dataArray[i];
+                volume = sum / dataArray.length;
+                if (volume > 35 && player.stamina > 0) {
+                    if (!isActive) isActive = true;
+                    player.vy = -Math.min(volume / 5 + 5, 16); 
+                    player.stamina -= (2 + (player.score / 500)); 
+                    createParticles(player.x + player.size/2, player.y + player.size, 'white');
+                    playSound(200 + volume, 'triangle', 0.1, 0.03);
+                }
+                if (!isGameOver) requestAnimationFrame(checkVolume);
+            }
+            checkVolume();
+        }
+
+        function update() {
+            if (!isStarted || isGameOver) return;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            player.vy += gravity; player.y += player.vy; player.x += player.vx;
+            if (player.x < 0 || player.x > canvas.width - player.size) player.vx *= -1;
+
+            platforms.forEach(p => {
+                if (!p.broken && player.vy > 0 && player.x + player.size > p.x && player.x < p.x + p.w &&
+                    player.y + player.size > p.y && player.y + player.size < p.y + p.h + player.vy) {
+                        player.y = p.y - player.size; player.vy = 0; player.stamina = player.maxStamina;
+                        if (p.type === 'ice' && p.timer === 0) p.timer = 1; 
+                }
+                if (p.timer > 0) {
+                    p.timer++;
+                    if (p.timer === 31) { p.broken = true; playSound(150, 'sawtooth', 0.2, 0.05); }
+                }
+            });
+
+            items.forEach(it => {
+                if (!it.taken && Math.abs(player.x + player.size/2 - it.x) < 25 && Math.abs(player.y + player.size/2 - it.y) < 25) {
+                    it.taken = true;
+                    if (it.type === 'meat') {
+                        player.maxStamina += 20; player.stamina = player.maxStamina; createParticles(it.x, it.y, 'yellow');
+                        playSound(880, 'sine', 0.3, 0.08); 
+                    } else {
+                        player.maxStamina = Math.max(50, player.maxStamina - 30); player.stamina = Math.max(0, player.stamina - 40);
+                        flashTimer = 15; createParticles(it.x, it.y, 'purple'); playSound(100, 'square', 0.5, 0.08);
+                    }
+                }
+            });
+
+            if (isActive && Math.random() < 0.02) enemies.push({ x: Math.random() < 0.5 ? -30 : 430, y: player.y - 300 + Math.random() * 400, vx: (Math.random() * 2 + (player.score / 1000)) * (Math.random() < 0.5 ? 1 : -1) });
+            enemies.forEach((en, index) => {
+                en.x += en.vx;
+                if (Math.abs(player.x + player.size/2 - en.x) < 20 && Math.abs(player.y + player.size/2 - en.y) < 20) {
+                    player.stamina -= 50; flashTimer = 10; enemies.splice(index, 1);
+                    createParticles(player.x + player.size/2, player.y + player.size/2, 'red'); playSound(300, 'sawtooth', 0.2, 0.1);
+                }
+            });
+
+            particles.forEach((p, index) => { p.x += p.vx; p.y += p.vy; p.life -= 0.02; if (p.life <= 0) particles.splice(index, 1); });
+
+            // --- スクロール処理と新しい足場の生成 ---
+            if (isActive && player.y < canvas.height / 2) {
+                let diff = canvas.height / 2 - player.y; player.y = canvas.height / 2; player.score += Math.floor(diff / 10);
+                document.getElementById('score').innerText = player.score;
+                platforms.forEach(p => {
+                    p.y += diff;
+                    if (p.y > canvas.height) { 
+                        p.y = 0; 
+                        let minW = Math.max(30, 70 - Math.floor(player.score / 500)); 
+                        p.w = minW + Math.random() * 20; 
+                        p.x = Math.random() * (canvas.width - p.w); 
+                        p.type = Math.random() < 0.2 ? 'ice' : 'normal'; 
+                        p.timer = 0; 
+                        p.broken = false;
+                        // ★修正箇所: 新しい足場が出るときにアイテムも一緒に抽選する
+                        spawnItemOnPlatform(p.x, p.w, p.y);
+                    }
+                });
+                items.forEach(it => it.y += diff); enemies.forEach(en => en.y += diff); particles.forEach(pa => pa.y += diff);
+            }
+
+            if (player.y > canvas.height) isGameOver = true;
+
+            platforms.forEach(p => { if (!p.broken) { ctx.fillStyle = p.type === 'ice' ? `rgba(173, 216, 230, ${1 - p.timer/30})` : '#654321'; ctx.fillRect(p.x, p.y, p.w, p.h); }});
+            items.forEach(it => { if(!it.taken){ ctx.fillStyle = it.type === 'meat' ? '#FF4500' : '#800080'; ctx.beginPath(); ctx.arc(it.x, it.y, it.size, 0, Math.PI * 2); ctx.fill(); }});
+            enemies.forEach(en => { ctx.fillStyle = 'black'; ctx.fillRect(en.x, en.y, 25, 15); });
+            particles.forEach(p => { ctx.fillStyle = p.color; ctx.globalAlpha = p.life; ctx.fillRect(p.x, p.y, 4, 4); ctx.globalAlpha = 1.0; });
+            ctx.fillStyle = player.stamina > 0 ? '#FFD700' : '#888'; ctx.fillRect(player.x, player.y, player.size, player.size);
+            ctx.fillStyle = player.stamina > 30 ? 'lime' : 'red'; ctx.fillRect(player.x, player.y - 10, player.size * (player.stamina / player.maxStamina), 5);
+            if (flashTimer > 0) { ctx.fillStyle = `rgba(128, 0, 128, ${flashTimer / 20})`; ctx.fillRect(0, 0, canvas.width, canvas.height); flashTimer--; }
+
+            if (isGameOver) {
+                if (player.score > hiScore) localStorage.setItem('jumperKunHiScore', player.score);
+                ctx.fillStyle = 'rgba(0,0,0,0.8)'; ctx.fillRect(0,0,canvas.width, canvas.height);
+                ctx.fillStyle = 'white'; ctx.font = '30px Arial'; ctx.fillText("GAME OVER", 110, 280);
+                if(flashTimer == 0) { playSound(60, 'sine', 1, 0.1); flashTimer = -1; }
+                ctx.font = '20px Arial'; ctx.fillText(`SCORE: ${player.score}`, 155, 320);
+                ctx.fillText("Click to Restart", 130, 370);
+            } else { requestAnimationFrame(update); }
+        }
+
+        window.onclick = () => { if (isGameOver) location.reload(); else if (!isStarted) { initGame(); initAudio(); isStarted = true; update(); }};
+    </script>
+</body>
+</html>
